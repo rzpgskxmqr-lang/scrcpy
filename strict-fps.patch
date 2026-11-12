@@ -1,0 +1,105 @@
+diff --git a/src/cli.c b/src/cli.c
+index 079b712..d172073 100644
+--- a/src/cli.c
++++ b/src/cli.c
+@@ -142,6 +142,7 @@ static const struct option long_options[] = {
+     {"no-video", no_argument, NULL, 'v'},
+     {"no-video-playback", no_argument, NULL, 'V'},
+     {"otg", no_argument, NULL, 'O'},
++    {"strict-fps", required_argument, NULL, 0x100},
+     {"port", required_argument, NULL, 'p'},
+     {"power-off-on-close", no_argument, NULL, 0x101},
+     {"prefer-text", no_argument, NULL, 0x102},
+@@ -632,6 +633,11 @@ parse_args(int argc, char *argv[], struct sc_options *opts)
+             opts->otg = true;
+             break;
+
++        case 0x100:
++            opts->strict_fps = atoi(optarg);
++            if (opts->strict_fps < 1) {
++                LOGE("strict-fps must be >= 1");
++                return false;
++            }
++            break;
+         case 'p':
+             opts->port = atoi(optarg);
+             if (opts->port <= 0 || opts->port > 65535) {
+@@ -1300,6 +1306,8 @@ print_usage(void)
+     "      --no-video-playback   disable video playback (still record)\n"
+     "      --otg                 run OTG mode (HID keyboard/mouse)\n"
+     "      -p, --port PORT       port to use\n"
++    "      --strict-fps N        strict render fps cap, drop excess frames\n"
++    "                            (rate shaping, no interpolation)\n"
+     "      --power-off-on-close  power off device on exit\n"
+     "      --prefer-text         prefer text injection\n"
+     "      --raw-key-events      send raw key events\n"
+diff --git a/src/options.h b/src/options.h
+index 48c4305..912737b 100644
+--- a/src/options.h
++++ b/src/options.h
+@@ -237,6 +237,7 @@ struct sc_options {
+     bool otg;
+     bool power_off_on_close;
+     bool prefer_text;
++    int32_t strict_fps;
+     bool raw_key_events;
+     bool record_audio;
+     const char *record_format;
+diff --git a/src/options.c b/src/options.c
+index 319154a..1972810 100644
+--- a/src/options.c
++++ b/src/options.c
+@@ -214,6 +214,7 @@ sc_options_init(struct sc_options *opts)
+     opts->otg = false;
+     opts->power_off_on_close = false;
+     opts->prefer_text = false;
++    opts->strict_fps = 0;
+     opts->raw_key_events = false;
+     opts->record_audio = true;
+     opts->record_format = NULL;
+diff --git a/src/video_decoder.h b/src/video_decoder.h
+index a611c07..2653084 100644
+--- a/src/video_decoder.h
++++ b/src/video_decoder.h
+@@ -43,6 +43,8 @@ struct sc_video_decoder {
+     sc_video_decoder_on_frame_callback on_frame;
+     void *callback_userdata;
+
++    int32_t strict_fps;
++    sc_tick last_emit_tick;
+     bool stopped;
+ };
+diff --git a/src/video_decoder.c b/src/video_decoder.c
+index 1217782..4c22412 100644
+--- a/src/video_decoder.c
++++ b/src/video_decoder.c
+@@ -212,6 +212,9 @@ sc_video_decoder_create(const struct sc_decoder_params *params,
+     decoder->on_frame = params->on_frame;
+     decoder->callback_userdata = params->callback_userdata;
+
++    decoder->strict_fps = params->opts->strict_fps;
++    decoder->last_emit_tick = 0;
++
+     decoder->stopped = false;
+     return decoder;
+ }
+
+@@ -420,6 +423,20 @@ sc_video_decoder_push_frame(struct sc_video_decoder *decoder, AVFrame *frame)
+         return true;
+     }
+
++    if (decoder->strict_fps > 0) {
++        sc_tick now = sc_tick_now();
++        sc_tick min_interval = SC_TICK_FROM_US(1000000 / decoder->strict_fps);
++
++        if (decoder->last_emit_tick != 0
++            && (now - decoder->last_emit_tick) < min_interval) {
++            av_frame_free(&frame);
++            return true;
++        }
++        decoder->last_emit_tick = now;
++    }
++
+     decoder->on_frame(decoder, frame, decoder->callback_userdata);
+     return true;
+ }
