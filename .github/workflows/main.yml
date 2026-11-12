@@ -1,0 +1,110 @@
+name: Build scrcpy with strict-fps rate shaping
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 8 * * *'
+  push:
+    branches: [ main ]
+
+env:
+  UPSTREAM_REPO: Genymobile/scrcpy
+  UPSTREAM_BRANCH: dev
+  PATCH_FILE: patches/strict-fps-rate-shape.patch
+
+jobs:
+  fetch-patch:
+    runs-on: ubuntu-latest
+    outputs:
+      patch: ${{ steps.patch.outputs.patch }}
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout patch repo
+      - id: patch
+        run: |
+          cat "${{ env.PATCH_FILE }}" > /tmp/strict.patch
+          echo "patch=$(base64 -w0 /tmp/strict.patch)" >> $GITHUB_OUTPUT
+
+  build-linux:
+    needs: fetch-patch
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch upstream scrcpy
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.UPSTREAM_BRANCH }}
+          path: scrcpy
+      - name: Apply patch
+        run: |
+          cd scrcpy
+          echo "${{ needs.fetch-patch.outputs.patch }}" | base64 -d > strict.patch
+          git apply --check strict.patch
+          git apply strict.patch
+      - name: Dependencies
+        run: |
+          cd scrcpy
+          sudo apt update
+          sudo apt install -y openjdk-21-jdk meson ninja-build libsdl2-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswresample-dev \
+            libusb-1.0-0-dev ffmpeg
+      - name: Build Linux + server
+        run: |
+          cd scrcpy
+          ./release/build_linux.sh x86_64
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrcpy-linux-x86_64-shaped
+          path: scrcpy/dist/scrcpy-linux-x86_64-*.tar.gz
+
+  build-win64:
+    needs: fetch-patch
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.UPSTREAM_BRANCH }}
+          path: scrcpy
+      - name: Apply patch
+        run: |
+          cd scrcpy
+          echo "${{ needs.fetch-patch.outputs.patch }}" | base64 -d > strict.patch
+          git apply --check strict.patch
+          git apply strict.patch
+      - name: Build Windows 64 (cross compile)
+        run: |
+          cd scrcpy
+          sudo apt install -y mingw-w64
+          ./release/build_windows.sh 64
+      - name: Upload Win64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrcpy-win64-shaped
+          path: scrcpy/dist/scrcpy-win64-*.zip
+
+  build-macos-arm:
+    needs: fetch-patch
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.UPSTREAM_BRANCH }}
+          path: scrcpy
+      - name: Apply patch
+        run: |
+          cd scrcpy
+          echo "${{ needs.fetch-patch.outputs.patch }}" | base64 -d > strict.patch
+          git apply --check strict.patch
+          git apply strict.patch
+      - name: Build macOS aarch64
+        run: |
+          cd scrcpy
+          brew install meson ninja sdl2 ffmpeg openjdk
+          ./release/build_macos.sh aarch64
+      - name: Upload macOS arm
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrcpy-macos-aarch64-shaped
+          path: scrcpy/dist/scrcpy-macos-aarch64-*.tar.gz
